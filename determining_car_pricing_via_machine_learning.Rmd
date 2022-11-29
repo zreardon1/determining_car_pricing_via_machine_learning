@@ -1,0 +1,419 @@
+---
+title: "Determining Car Pricing Via Machine Learning"
+author: "Zack Reardon"
+date: "10/10/2022"
+output:
+    html_document:
+      toc: true
+      toc_float: true
+      code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+Through a regression-approach predictive machine learning model, the aim is to determine the asking price of a particular vehicle with minimum error.
+
+### Data
+
+The dataset I am using includes data from approximately 250,000 used vehicles advertised for sale in the UK between 2012 and 2021. Each vehicle is identified by its make, model, year of advertisement, month of advertisement, color, year of registration, body type, mileage, engine size, transmission type, fuel type, price, number of seats, and number of doors among other things. I have obtained this dataset from [DVM-CAR](https://deepvisualmarketing.github.io) and converted it into an Excel file. The citation is available in the data folder on GitHub.
+
+### Purpose
+
+I am interested in predicting the asking price of a given vehicle in the United Kingdom. In particular, I hope that my model is able to aid in determining the expected value of a vehicle on behalf of a seller or the expected cost of a vehicle for a buyer within the market. While the data I am using relates to the car market in the UK, a similar model could be used to predict car pricing in the United States or elsewhere, provided a sufficient dataset is available.
+
+## Loading Packages
+
+Before conducting EDA and modelling on our dataset, we will first install and load the required packages for implementation within the R program.
+
+```{r, message = FALSE}
+library(ggplot2)
+library(tidyverse)
+library(tidymodels)
+library(corrplot)
+library(ggthemes)
+library(scales)
+library(glmnet)
+library(thinkr)
+library(randomForest)
+tidymodels_prefer()
+```
+
+## Loading and Cleaning Dataset
+
+In order to render the data usable in R, I first cleaned the data in Excel to ensure it could be read effectively. The process of cleaning the data included removing any rows in Excel where one or more of the corresponding columns contained empty or unknown parameters. Additionally, I altered the original predictor Engin_size to `Engin_size_L` where instead of the engine capacity followed by "L" to represent liters, the new predictor would just show the engine capacity in the number of liters. This allows for the variable to be treated as a quantitative value for the purpose of comparisons. All in all, the number of vehicle data points decreased from 268,255 to 235,097 which is still a significantly large sample size for our purposes. I was then able to import the data into RStudio.
+
+```{r}
+library("readxl")
+UK_Car_Ad_Dataset <- read_excel("/Users/zackreardon/Documents/Data/UK_Car_Ad_table.xlsx")
+```
+
+Let's quickly visualize the data to get a sense of the variables involved in the initial dataset.
+```{r}
+UK_Car_Ad_Dataset %>%
+  # display portion of initial dataset
+  head()
+```
+
+Since advertised month and advertised year are only relevant in the context of each other, appending the advertised month onto the advertised year as a decimal should make for a more practical correlation between the time of advertising and the other predictors/response. I will go about this by subtracting 1 from the month, dividing it by 12, and adding that fraction to the associated year. This should combine the advertised year and month into a single relationship which can be used as a new predictor variable. The advertised month and advertised year will be dropped from the dataset in favor of the new variable `Adv_time` representing the time of advertisement.
+
+```{r}
+UK_Car_Ad_Dataset <- UK_Car_Ad_Dataset %>%
+  # create new variable combining advertisement year and month
+  mutate(Adv_time = Adv_year + ((Adv_month-1)/12)) %>%
+  # remove initial variables representing advertisement year and advertisement month
+  select(-Adv_year, -Adv_month)
+```
+
+The variables Genmodel_ID and Adv_ID are not relevant outside of the initial use of the compiled data. Furthermore, since I am planning on creating dummy variables for `Genmodel` and the variable `Adv_time` is numerical, Genmodel_ID and Adv_ID are not needed as predictors. Genmodel_ID and Adv_ID will subsequently be removed from the dataset. The remaining variables are exhibited below.
+
+```{r}
+UK_Car_Ad_Dataset <- UK_Car_Ad_Dataset %>%
+  # remove variables Genmodel_ID and Adv_ID
+  select(-Genmodel_ID, -Adv_ID)
+
+# show variables in dataset
+sapply(UK_Car_Ad_Dataset, class)
+```
+Finally, we will convert all "character" predictors to factors and clean the level names in `Genmodel` for dummy coding later.
+
+```{r}
+# converting to factors
+UK_Car_Ad_Dataset$Maker <- as.factor(UK_Car_Ad_Dataset$Maker)
+UK_Car_Ad_Dataset$Genmodel <- as.factor(UK_Car_Ad_Dataset$Genmodel)
+UK_Car_Ad_Dataset$Color <- as.factor(UK_Car_Ad_Dataset$Color)
+UK_Car_Ad_Dataset$Bodytype <- as.factor(UK_Car_Ad_Dataset$Bodytype)
+UK_Car_Ad_Dataset$Gearbox <- as.factor(UK_Car_Ad_Dataset$Gearbox)
+UK_Car_Ad_Dataset$Fuel_type <- as.factor(UK_Car_Ad_Dataset$Fuel_type)
+
+# cleaning levels
+UK_Car_Ad_Dataset$Genmodel <- clean_levels(UK_Car_Ad_Dataset$Genmodel)
+```
+
+### Codebook
+
+After adjusting the dataset, the finalized codebook for informational purposes is as follows.
+
+* `Maker`: the manufacturer of the advertised vehicle
+* `Genmodel`: the model name of the advertised vehicle
+* `Color`: the color of the advertised vehicle
+* `Reg_year`: the year that the advertised vehicle was registered
+* `Bodytype`: the type of vehicle (e.g. SUV, Convertible, Pickup, etc.)
+* `Runned_Miles`: the mileage of the advertised vehicle
+* `Engin_size_L`: the capacity of the engine in liters
+* `Gearbox`: the vehicle's transmission type (Automatic, Semi-Automatic, or Manual)
+* `Fuel_type`: the type of fuel that the vehicle accepts (e.g. Petrol, Diesel, Electric, etc.)
+* `Price`: the advertised price of the vehicle in GBP
+* `Seat_num`: the number of seats
+* `Door_num`: the number of doors/hatches
+* `Adv_time`: the time of the advertisement in year + fraction representing month
+
+A copy of this codebook is located in the data folder in GitHub.
+
+## Splitting Data
+
+The next step is to split the data for use in fitting a model. I stratified the data on the response `Price`, the variable representing the price of the vehicle in question. This ensures that vehicles at all price points are well represented in both the training and testing sets. The data was split with 80% assigned to the training set and 20% assigned to the testing set.
+```{r}
+# ensure same split is used
+set.seed(100)
+
+# split data and stratify on predictor Bodytype
+UK_CAD_split <- UK_Car_Ad_Dataset %>%
+  initial_split(prop = 0.8, strata = "Price")
+
+# create training and testing sets
+UK_CAD_train <- training(UK_CAD_split)
+UK_CAD_test <- testing(UK_CAD_split)
+```
+
+```{r}
+# verifying number of observations in training set
+dim(UK_CAD_train)
+```
+
+```{r}
+# verifying number of observations in testing set
+dim(UK_CAD_test)
+```
+The number of observations in the training set is 188,076 while the number of observations in the testing set is 47,021.
+
+## Exploratory Data Analysis
+
+Before creating a model, it is important to explore the relationships between variables within the training data.
+
+### Manufacturer
+
+Intuitively, I would expect a correlation between manufacturer (`Maker`) and the price (`Price`) of a used vehicle. Let's visualize the average advertised price based on manufacturer.
+```{r, message = FALSE}
+UK_CAD_train %>%
+  # group by manufacturer
+  group_by(Maker) %>%
+  # create variable representing average price
+  summarise(Avg_price = mean(Price, na.rm=TRUE)) %>%
+  # plot average price by manufacturer
+  ggplot(aes(x=reorder(Maker,-Avg_price), y=Avg_price)) + 
+  geom_col(fill='red', width=0.25) +
+  theme(axis.text.x = element_text(angle=90)) +
+  ggtitle("Average Advertised Price by Manufacturer") +
+  xlab("Manufacturer") +
+  ylab("Average Price") +
+  # adjust notation for y-axis
+  scale_y_continuous(labels = comma)
+```
+
+As expected, manufacturers such as McLaren, Lamborghini, and Ferrari have the highest average advertised price while smaller Malaysian and Korean brands have the lowest average advertised price. There appears to be a large correlation between brand and price based on this metric.
+
+### Mileage
+
+People tend to avoid higher-mileage vehicles when in the used car search. Let's see the distribution of the variable `Runned_Miles` to highlight how many high-mileage vehicles are on the market.
+
+```{r}
+ggplot(UK_CAD_train, aes(Runned_Miles)) +
+  # capping max at 250,000 for visualization purposes
+  geom_histogram(binwidth=5, breaks = seq(0, 250000, 500)) +
+  labs(title="Histogram of Mileage") +
+  xlab("Mileage") +
+  ylab("Count") +
+  # adjust notation for x-axis
+  scale_x_continuous(labels = comma)
+```
+
+Overall the amount of vehicles being advertised decreases as the mileage increases. In particular, a large portion of the vehicles are advertised with 0 miles. This is probably due to new cars being advertised through dealerships. Interestingly, there appears to be periodic and consistent spikes at various levels of mileage. I would interpret these to indicate intuitive estimates rather than direct reports from the vehicle's odometer (e.g. 105,000 miles vs 103,521 miles).
+
+Since there appears to be fewer cars offered with higher mileage, lets visualize the correlation between mileage and the advertised price.
+
+```{r, message = FALSE}
+ggplot(UK_CAD_train, aes(x=Runned_Miles, y=Price)) +
+  geom_point(size=0.05, shape=1) +
+  labs(title="Mileage vs Price") +
+  xlab("Mileage") +
+  # adjust notation for x-axis and y-axis
+  scale_x_continuous(labels = comma) +
+  scale_y_continuous(labels = comma) +
+  # cap price at 200,000 and mileage at 250,000 for visualization purposes
+  xlim(0,250000) +
+  ylim(0,200000)
+```
+
+As the mileage of a vehicle increases, the price tends to decrease as expected. The price also exhibits banding as vehicles tend to be advertised at distinct prices such as 15000, 50000, 100000, etc. rather than specific prices such as 15645.
+
+### Year of Registration
+
+The year of registration refers to the year that the vehicle in question was initially registered. Therefore, newer models will typically have a higher value for the year of registration. It seems natural that cars with a newer year of registration will command a higher price than older vehicles.
+
+In order to validate this theory, we will explore the variable `Reg_year`. Let's look at the years of registration that are recorded in the data.
+
+```{r}
+registration_years <- unique(UK_CAD_train$Reg_year)
+# convert to ascending order
+sort(registration_years, decreasing=FALSE)
+```
+
+The earliest recorded year is 1990, with cars registered primarily in the 2000s. The most recent year of registration is 2019. Let's compare the year of registration to a vehicle's mileage.
+```{r}
+# temporarily create new training set with Reg_year as a factor
+UK_CAD_train1 <- UK_CAD_train
+UK_CAD_train1$Reg_year <- as.factor(UK_CAD_train1$Reg_year)
+
+ggplot(UK_CAD_train1, aes(x=Reg_year, y=Runned_Miles)) +
+  geom_boxplot(outlier.color="red") +
+  theme(axis.text.x = element_text(angle=90)) +
+  labs(title="Registered Year vs Mileage") +
+  xlab("Registered Year") +
+  ylab("Mileage") +
+  # cap mileage at 250,000 for visualization purposes and remove new vehicles
+  ylim(1,250000)
+```
+
+It appears that an inverse relationship does exist between the year of registration and the mileage of an advertised vehicle. However, there are a lot of outliers in the data meaning that other factors come into play to determine mileage such as personal usage rather than simply time since registration. Since we noted an inverse relationship between `Runned_Miles` and `Price`, and an inverse relationship between `Reg_year` and `Runned_Miles`, we can expect a positive correlation between `Reg_year` and `Price`.
+
+### Color
+
+Before assessing any correlations between `Color` and any other predictors or the response variable, I'd like to visualize the distribution of the `Color` variable. This should provide insight into the popularity of certain colors and highlight market trends.
+
+```{r}
+UK_CAD_train %>%
+  # plot number of vehicles by color
+  ggplot(aes(x=fct_infreq(Color))) + 
+  geom_bar() +
+  labs(title="Number of Vehicles by Given Color") +
+  xlab("Color") +
+  ylab("Count") +
+  # adjust angle of text on x-axis
+  theme(axis.text.x = element_text(angle=90))
+```
+
+As would be expected, it appears that basic colors such as silver, black, and white tend to be well represented in the training dataset while specific or more vibrant colors such as burgundy or indigo account for a much smaller portion. When taking resale value into account, the general market advice is that vehicles in these basic colors tend to maintain their value better than those in bolder hues.
+
+To evaluate this theory, let's compare vehicle color to advertised price via the predictor `Color` and the response `Price`. In order to make the comparison fair, we will cap the price at 50,000 to eliminate skew from expensive supercars in exotic colors.
+
+```{r}
+# temporarily remove vehicles priced at over 50,000
+UK_CAD_train2 = filter(UK_CAD_train, Price<50000)
+
+UK_CAD_train2 %>%
+  # group by manufacturer
+  group_by(Color) %>%
+  # create variable representing average price
+  summarise(Avg_price = mean(Price, na.rm=TRUE)) %>%
+  # plot average price by manufacturer
+  ggplot(aes(x=reorder(Color,-Avg_price), y=Avg_price)) + 
+  geom_col(fill="red", width=0.5) +
+  theme(axis.text.x = element_text(angle=90)) +
+  ggtitle("Average Advertised Price by Vehicle Color") +
+  xlab("Color") +
+  ylab("Average Price") +
+  # adjust notation for y-axis
+  scale_y_continuous(labels = comma)
+```
+
+Interestingly there appears to be no distinct pattern between color and price, at least within the 50,000 GBP price point. Bright colors as well as more subdued colors are both represented at the higher end of the average price scale. Notably, silver also falls on the lower end of the scale which is unexpected. Within the context of our dataset, color may serve as a less effective predictor of price than I initially thought.
+
+## Fitting Models
+
+### Fold Training Data and Build Recipe
+
+We will cross-validate by folding the training set into 10 folds with 5 repeats and again stratify on `Price`. This allows for the accuracy of the model in question to be assessed on new data within the training set before fitting the model to the testing set.
+
+```{r}
+# set seed for repeatability
+set.seed(100)
+
+UK_CAD_folds <- vfold_cv(UK_CAD_train, v = 10, repeats = 5, strata = "Price")
+```
+
+Before fitting models to the training data, I will construct a recipe that defines the relationship between our predictors and the response `Price`. Interaction variables are not necessary for modelling our data. I will save the recipe in a subfolder of data called modelling available in GitHub. Unfortunately, the training set and the folds are too large to be stored in GitHub.
+```{r,eval=FALSE}
+# create recipe with Price as the response
+UK_CAD_recipe <- recipe(Price ~ Maker + Genmodel + Color + Reg_year + Bodytype + Runned_Miles + Engin_size_L + Gearbox + Fuel_type + Seat_num + Door_num + Adv_time, data = UK_CAD_train) %>%
+  # dummy coding all categorical predictors
+  step_dummy(all_nominal_predictors()) %>%
+  # account for new values
+  step_novel(all_nominal_predictors()) %>%
+  # filter variables with single value
+  step_zv(all_predictors()) %>%
+  # center and scale all predictors
+  step_center(all_predictors()) %>%
+  step_scale(all_predictors())
+
+# save recipe as .rda
+save(UK_CAD_recipe, file="/Users/zackreardon/Documents/determining_car_pricing_via_machine_learning/data/modelling/recipe.rda")
+```
+
+Now that we have defined a recipe for our data, we can begin the model fitting process. The models that I will be fitting are lasso regression, random forest, 
+
+### Lasso Regression
+
+The first step in fitting a lasso regression to the training data is to set up a lasso regression specification and an associated workflow. Notably, for a lasso regression, we will utilize a linear regression function with mixture set equal to 1. We will also tune the penalty to ensure the best available r-squared value.
+
+```{r,eval=FALSE}
+# set specification for lasso regression
+lasso_spec <- 
+  linear_reg(penalty = tune(), mixture = 1) %>%
+  set_mode("regression") %>%
+  set_engine("glmnet")
+
+# loading recipe
+load("/Users/zackreardon/Documents/determining_car_pricing_via_machine_learning/data/modelling/recipe.rda")
+
+# create workflow for lasso regression
+lasso_workflow <- workflow() %>% 
+  # add recipe created earlier
+  add_recipe(UK_CAD_recipe) %>% 
+  add_model(lasso_spec)
+```
+
+Next we must create a grid for penalty that indicates the range of penalty that we will assess the performance of, as well as the number of levels. For levels I have chosen 100, while the range for penalty is set between -5 and 5.
+
+```{r,eval=FALSE}
+# creating grid of penalty for tuning
+penalty_grid <- grid_regular(penalty(range = c(-5,5)), levels = 100)
+```
+
+We are now able to fit the models by tuning the penalty grid on UK_CAD_folds within our lasso regression workflow. The results are illustrated via the autoplot function.
+
+```{r,eval=FALSE}
+# fit resamples with penalty_grid
+UK_CAD_lasso_tune <- tune_grid(
+  lasso_workflow,
+  resamples = UK_CAD_folds, 
+  grid = penalty_grid)
+
+save(UK_CAD_lasso_tune, file="/Users/zackreardon/Documents/determining_car_pricing_via_machine_learning/data/modelling/lasso_tune.rda")
+```
+
+```{r,eval=FALSE}
+# loading UK_CAD_lasso_tune
+load("/Users/zackreardon/Documents/determining_car_pricing_via_machine_learning/data/modelling/lasso_tune.rda")
+
+# plotting outcome
+autoplot(UK_CAD_lasso_tune)
+```
+
+Now we can select the best penalty value based on its r-squared metric, refit the training set with this penalty value, and utilize this model to predict on the testing data. The final fit for the lasso regression on the training data is stored in the Model_Fitting subfolder of the Data folder in GitHub.
+
+```{r,eval=FALSE}
+# select penalty with best r-squared
+final_penalty <- select_best(UK_CAD_lasso_tune, metric = "rsq")
+
+# refit training set with final_penalty
+UK_CAD_lasso_final <- finalize_workflow(lasso_workflow, final_penalty)
+
+UK_CAD_lasso_final_fit <- fit(UK_CAD_lasso_final, data = UK_CAD_train)
+
+# save UK_CAD_lasso_final_fit as .rda
+save(UK_CAD_lasso_final_fit, file="/Users/zackreardon/Documents/determining_car_pricing_via_machine_learning/data/modelling/lasso_final_fit.rda")
+```
+
+```{r,eval=FALSE}
+# load UK_CAD_lasso_final_fit
+load("/Users/zackreardon/Documents/determining_car_pricing_via_machine_learning/data/modelling/lasso_final_fit.rda")
+
+# predict testing set with UK_CAD_lasso_final_fit
+augment(UK_CAD_lasso_final_fit, new_data = UK_CAD_test) %>%
+  rsq(truth = Price, estimate = .pred)
+```
+
+### Random Forest
+
+We will begin the fitting process for a random forest by creating a specification for this model as well as a workflow. I will also prepare hyperparameters for tuning and set the number of trees equal to 10,000.
+
+```{r,eval=FALSE}
+# creating specification for random forest
+rf_spec <- rand_forest(mtry = tune(), trees = 10000, min_n = tune()) %>%
+  set_engine("randomForest", importance = TRUE) %>%
+  set_mode("regression")
+
+# loading recipe
+load("/Users/zackreardon/Documents/determining_car_pricing_via_machine_learning/data/modelling/recipe.rda")
+
+# swtting up workflow
+rf_workflow <- workflow() %>% 
+  # add recipe created earlier
+  add_recipe(UK_CAD_recipe) %>% 
+  add_model(rf_spec)
+```
+Let's create a tuning grid for the hyperparameters `mtry` and `min_n`. The ranges that I am utilizing for these parameters are (2,10) and (10,100) respectively.
+
+```{r,eval=FALSE}
+# create regular tuning grid
+hp_grid <- grid_regular(mtry(range=c(2,10)), min_n(range=c(10,100)), levels=2)
+```
+Now we can fit our tuning parameters to our resamples to help optimize our random forest model.
+
+```{r,eval=FALSE}
+# fitting resamples with tuning grid
+UK_CAD_rf_tune <- tune_grid(
+  rf_workflow,
+  resamples = UK_CAD_folds, 
+  grid = hp_grid)
+
+save(UK_CAD_rf_tune, file = "/Users/zackreardon/Documents/determining_car_pricing_via_machine_learning/data/modelling/rf_tune.rda")
+```
+
+## Finalized Model
+
+## Conclusion
