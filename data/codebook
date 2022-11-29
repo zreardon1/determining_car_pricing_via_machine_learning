@@ -1,0 +1,13 @@
+Maker: the manufacturer of the advertised vehicle
+Genmodel: the model name of the advertised vehicle
+Color: the color of the advertised vehicle
+Reg_year: the year that the advertised vehicle was registered
+Bodytype: the type of vehicle (e.g. SUV, Convertible, Pickup, etc.)
+Runned_Miles: the mileage of the advertised vehicle
+Engin_size_L: the capacity of the engine in liters
+Gearbox: the vehicle’s transmission type (Automatic, Semi-Automatic, or Manual)
+Fuel_type: the type of fuel that the vehicle accepts (e.g. Petrol, Diesel, Electric, etc.)
+Price: the advertised price of the vehicle in GBP
+Seat_num: the number of seats
+Door_num: the number of doors/hatches
+Adv_time: the time of the advertisement in year + fraction representing month

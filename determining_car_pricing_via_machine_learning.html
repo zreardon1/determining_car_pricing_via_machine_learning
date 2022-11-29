@@ -506,20 +506,24 @@ UK_CAD_train2 %&gt;%
 set.seed(100)
 
 UK_CAD_folds &lt;- vfold_cv(UK_CAD_train, v = 10, repeats = 5, strata = &quot;Price&quot;)</code></pre>
-<p>Before fitting models to the training data, I will construct a recipe that defines the relationship between our predictors and the response <code>Price</code>. Interaction variables are not necessary for modelling our data. I will save the recipe in a subfolder of data called modelling available in GitHub. Unfortunately, the training set and the folds are too large to be stored in GitHub.</p>
+<p>Before fitting models to the training data, I will construct a recipe that defines the relationship between our predictors and the response <code>Price</code>. Interaction variables should be created between <code>Genmodel</code> and <code>Door_num</code> as well as between <code>Door_num</code> and <code>Seat_num</code>. <code>Price</code> and <code>Runned_Miles</code> will also be log-transformed. I will save the recipe in a subfolder of data called modelling available in GitHub. Unfortunately, the training set and the folds are too large to be stored in GitHub.</p>
 <pre class="r"><code># create recipe with Price as the response
 UK_CAD_recipe &lt;- recipe(Price ~ Maker + Genmodel + Color + Reg_year + Bodytype + Runned_Miles + Engin_size_L + Gearbox + Fuel_type + Seat_num + Door_num + Adv_time, data = UK_CAD_train) %&gt;%
-  # dummy coding all categorical predictors
-  step_dummy(all_nominal_predictors()) %&gt;%
   # account for new values
   step_novel(all_nominal_predictors()) %&gt;%
+  # dummy coding all categorical predictors
+  step_dummy(all_nominal_predictors()) %&gt;%
+  # create interaction variables as necessary
+  step_interact(~ starts_with(&quot;Genmodel&quot;):Door_num) %&gt;%
+  step_interact(~ Door_num:Seat_num) %&gt;%
+  # log response Price and predictor Runned_Miles
+  step_log(Price) %&gt;%
+  step_log(Runned_Miles) %&gt;%
   # filter variables with single value
   step_zv(all_predictors()) %&gt;%
   # center and scale all predictors
-  step_center(all_predictors()) %&gt;%
-  step_scale(all_predictors())
+  step_normalize(all_predictors())
 
-# save recipe as .rda
 save(UK_CAD_recipe, file=&quot;/Users/zackreardon/Documents/determining_car_pricing_via_machine_learning/data/modelling/recipe.rda&quot;)</code></pre>
 <p>Now that we have defined a recipe for our data, we can begin the model fitting process. The models that I will be fitting are lasso regression, random forest,</p>
 </div>
