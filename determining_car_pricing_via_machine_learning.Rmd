@@ -19,7 +19,7 @@ Through a regression-approach predictive machine learning model, the aim is to d
 
 ### Data
 
-The dataset I am using includes data from approximately 250,000 used vehicles advertised for sale in the UK between 2012 and 2021. Each vehicle is identified by its make, model, year of advertisement, month of advertisement, color, year of registration, body type, mileage, engine size, transmission type, fuel type, price, number of seats, and number of doors among other things. I have obtained this dataset from [DVM-CAR](https://deepvisualmarketing.github.io) and converted it into an Excel file. The citation is available in the data folder on GitHub.
+The dataset I am using includes data from approximately 250,000 used vehicles advertised for sale in the UK between 2012 and 2021. Each vehicle is identified by its make, model, year of advertisement, month of advertisement, color, year of registration, body type, mileage, engine size, transmission type, fuel type, price, number of seats, and number of doors among other things. I have obtained this dataset from [DVM-CAR](https://deepvisualmarketing.github.io) and converted it into an Excel file. Although this file was too large to push, the citation is available in the data folder in GitHub.
 
 ### Purpose
 
@@ -39,6 +39,9 @@ library(scales)
 library(glmnet)
 library(thinkr)
 library(randomForest)
+library(kknn)
+library(kernlab)
+library(tune)
 tidymodels_prefer()
 ```
 
@@ -130,12 +133,8 @@ UK_CAD_test <- testing(UK_CAD_split)
 ```
 
 ```{r}
-# verifying number of observations in training set
+# verifying number of observations in training and testing sets
 dim(UK_CAD_train)
-```
-
-```{r}
-# verifying number of observations in testing set
 dim(UK_CAD_test)
 ```
 The number of observations in the training set is 188,076 while the number of observations in the testing set is 47,021.
@@ -270,35 +269,41 @@ UK_CAD_train2 %>%
   scale_y_continuous(labels = comma)
 ```
 
-Interestingly there appears to be no distinct pattern between color and price, at least within the 50,000 GBP price point. Bright colors as well as more subdued colors are both represented at the higher end of the average price scale. Notably, silver also falls on the lower end of the scale which is unexpected. Within the context of our dataset, color may serve as a less effective predictor of price than I initially thought.
+Interestingly there appears to be no distinct pattern between color and price, at least within the 50,000 GBP price point. Bright colors as well as more subdued colors are both represented at the higher end of the average price scale. Notably, silver also falls on the lower end of the scale which is unexpected. Within the context of our dataset, the color palette may serve as a less effective predictor of price than I initially thought.
 
 ## Fitting Models
 
 ### Fold Training Data and Build Recipe
 
-We will cross-validate by folding the training set into 10 folds with 5 repeats and again stratify on `Price`. This allows for the accuracy of the model in question to be assessed on new data within the training set before fitting the model to the testing set.
+We will cross-validate by folding the training set into 10 folds with 5 repeats and again stratify on `Price`. This allows for the accuracy of the model in question to be assessed on new data within the training set before fitting the model to the testing set. `Runned_Miles` will be prepped to be logged by filtering out values of zero. Fewer than 390 observations will be removed with this step which does not represent a significant decrease in available data within the folds.
 
 ```{r}
+# filter training data to remove zeros
+UK_CAD_train <- UK_CAD_train %>%
+  filter(Runned_Miles != 0)
+
 # set seed for repeatability
 set.seed(100)
 
 UK_CAD_folds <- vfold_cv(UK_CAD_train, v = 10, repeats = 5, strata = "Price")
 ```
 
-Before fitting models to the training data, I will construct a recipe that defines the relationship between our predictors and the response `Price`. Interaction variables should be created between `Genmodel` and `Door_num` as well as between `Door_num` and `Seat_num`. `Price` and `Runned_Miles` will also be log-transformed. I will save the recipe in a subfolder of data called modelling available in GitHub. Unfortunately, the training set and the folds are too large to be stored in GitHub.
+Before fitting models to the training data, I will construct a recipe that defines the relationship between our predictors and the response `Price`. Interaction variables should be created between `Genmodel` and `Door_num` as well as between `Door_num` and `Seat_num`. I decided to log `Runned_Miles` since its distribution is right-skewed. I will save the recipe in a subfolder of data called modelling available in GitHub. Unfortunately, the training set and the folds are too large to be stored in GitHub.
+
 ```{r,eval=FALSE}
 # create recipe with Price as the response
 UK_CAD_recipe <- recipe(Price ~ Maker + Genmodel + Color + Reg_year + Bodytype + Runned_Miles + Engin_size_L + Gearbox + Fuel_type + Seat_num + Door_num + Adv_time, data = UK_CAD_train) %>%
   # account for new values
   step_novel(all_nominal_predictors()) %>%
+  # assign "other" if less numerous than threshold
+  step_other(Genmodel, threshold = 1000) %>%
   # dummy coding all categorical predictors
   step_dummy(all_nominal_predictors()) %>%
   # create interaction variables as necessary
   step_interact(~ starts_with("Genmodel"):Door_num) %>%
   step_interact(~ Door_num:Seat_num) %>%
-  # log response Price and predictor Runned_Miles
-  step_log(Price) %>%
-  step_log(Runned_Miles) %>%
+  # log right-skewed numeric variable
+  step_log(Runned_Miles, base = 10) %>%
   # filter variables with single value
   step_zv(all_predictors()) %>%
   # center and scale all predictors
@@ -307,13 +312,13 @@ UK_CAD_recipe <- recipe(Price ~ Maker + Genmodel + Color + Reg_year + Bodytype +
 save(UK_CAD_recipe, file="/Users/zackreardon/Documents/determining_car_pricing_via_machine_learning/data/modelling/recipe.rda")
 ```
 
-Now that we have defined a recipe for our data, we can begin the model fitting process. The models that I will be fitting are lasso regression, random forest, 
+Now that we have defined a recipe for our data, we can begin the model fitting process. The models that I will be fitting are lasso regression, random forest, k-nearest neighbors, and support vector machine. While the tuned models are all saved as .rda files within the modelling subfolder locally, these files are too large to push to GitHub.
 
 ### Lasso Regression
 
-The first step in fitting a lasso regression to the training data is to set up a lasso regression specification and an associated workflow. Notably, for a lasso regression, we will utilize a linear regression function with mixture set equal to 1. We will also tune the penalty to ensure the best available r-squared value.
+The first step in fitting a lasso regression to the training data is to set up a lasso regression specification and an associated workflow. Notably, for a lasso regression, we will utilize a linear regression function with `mixture` set equal to 1. We will also tune the penalty to ensure the best available r-squared value.
 
-```{r,eval=FALSE}
+```{r}
 # set specification for lasso regression
 lasso_spec <- 
   linear_reg(penalty = tune(), mixture = 1) %>%
@@ -330,14 +335,14 @@ lasso_workflow <- workflow() %>%
   add_model(lasso_spec)
 ```
 
-Next we must create a grid for penalty that indicates the range of penalty that we will assess the performance of, as well as the number of levels. For levels I have chosen 100, while the range for penalty is set between -5 and 5.
+Next we must create a grid for `penalty` that indicates the range of penalty values that we will assess the performance of, as well as the number of levels. For `levels` I have chosen 50, while the range for penalty is set between -3 and 3. I initially implemented a penalty range between -10 and 10 but reduced it for the sake of computing power.
 
-```{r,eval=FALSE}
+```{r}
 # creating grid of penalty for tuning
-penalty_grid <- grid_regular(penalty(range = c(-5,5)), levels = 100)
+penalty_grid <- grid_regular(penalty(range = c(-3,3)), levels = 50)
 ```
 
-We are now able to fit the models by tuning the penalty grid on UK_CAD_folds within our lasso regression workflow. The results are illustrated via the autoplot function.
+We are now able to fit the models by tuning the penalty grid on UK_CAD_folds within our lasso regression workflow.
 
 ```{r,eval=FALSE}
 # fit resamples with penalty_grid
@@ -348,8 +353,9 @@ UK_CAD_lasso_tune <- tune_grid(
 
 save(UK_CAD_lasso_tune, file="/Users/zackreardon/Documents/determining_car_pricing_via_machine_learning/data/modelling/lasso_tune.rda")
 ```
+The results are illustrated via the autoplot function.
 
-```{r,eval=FALSE}
+```{r}
 # loading UK_CAD_lasso_tune
 load("/Users/zackreardon/Documents/determining_car_pricing_via_machine_learning/data/modelling/lasso_tune.rda")
 
@@ -357,54 +363,30 @@ load("/Users/zackreardon/Documents/determining_car_pricing_via_machine_learning/
 autoplot(UK_CAD_lasso_tune)
 ```
 
-Now we can select the best penalty value based on its r-squared metric, refit the training set with this penalty value, and utilize this model to predict on the testing data. The final fit for the lasso regression on the training data is stored in the Model_Fitting subfolder of the Data folder in GitHub.
-
-```{r,eval=FALSE}
-# select penalty with best r-squared
-final_penalty <- select_best(UK_CAD_lasso_tune, metric = "rsq")
-
-# refit training set with final_penalty
-UK_CAD_lasso_final <- finalize_workflow(lasso_workflow, final_penalty)
-
-UK_CAD_lasso_final_fit <- fit(UK_CAD_lasso_final, data = UK_CAD_train)
-
-# save UK_CAD_lasso_final_fit as .rda
-save(UK_CAD_lasso_final_fit, file="/Users/zackreardon/Documents/determining_car_pricing_via_machine_learning/data/modelling/lasso_final_fit.rda")
-```
-
-```{r,eval=FALSE}
-# load UK_CAD_lasso_final_fit
-load("/Users/zackreardon/Documents/determining_car_pricing_via_machine_learning/data/modelling/lasso_final_fit.rda")
-
-# predict testing set with UK_CAD_lasso_final_fit
-augment(UK_CAD_lasso_final_fit, new_data = UK_CAD_test) %>%
-  rsq(truth = Price, estimate = .pred)
-```
-
 ### Random Forest
 
-We will begin the fitting process for a random forest by creating a specification for this model as well as a workflow. I will also prepare hyperparameters for tuning and set the number of trees equal to 10,000.
+We will begin the fitting process for a random forest by creating a specification for this model as well as a workflow. I will also prepare hyperparameters for tuning and set the number of trees equal to 1000 which should be sufficient for our data. There is no need to tune the number of trees since a greater number of trees does not induce overfitting in a random forest model.
 
-```{r,eval=FALSE}
+```{r}
 # creating specification for random forest
-rf_spec <- rand_forest(mtry = tune(), trees = 10000, min_n = tune()) %>%
-  set_engine("randomForest", importance = TRUE) %>%
+rf_spec <- rand_forest(mtry = tune(), trees = 1000, min_n = tune()) %>%
+  set_engine("ranger") %>%
   set_mode("regression")
 
 # loading recipe
 load("/Users/zackreardon/Documents/determining_car_pricing_via_machine_learning/data/modelling/recipe.rda")
 
-# swtting up workflow
+# setting up workflow
 rf_workflow <- workflow() %>% 
   # add recipe created earlier
   add_recipe(UK_CAD_recipe) %>% 
   add_model(rf_spec)
 ```
-Let's create a tuning grid for the hyperparameters `mtry` and `min_n`. The ranges that I am utilizing for these parameters are (2,10) and (10,100) respectively.
+Let's create a tuning grid for the hyperparameters `mtry` and `min_n`. The ranges that I am utilizing for for these parameters are (2,8) and (5,20) respectively. The values for `mtry` must be contained within (1,14) since there are 14 total predictors including the two interaction variables. However, I am not confident that utilizing more than 8 predictors will be beneficial. `levels` is set equal to 2 to manage computing requirements.
 
-```{r,eval=FALSE}
+```{r}
 # create regular tuning grid
-hp_grid <- grid_regular(mtry(range=c(2,10)), min_n(range=c(10,100)), levels=2)
+hp_grid <- grid_regular(mtry(range=c(2,8)), min_n(range=c(5,20)), levels = 2)
 ```
 Now we can fit our tuning parameters to our resamples to help optimize our random forest model.
 
@@ -417,7 +399,170 @@ UK_CAD_rf_tune <- tune_grid(
 
 save(UK_CAD_rf_tune, file = "/Users/zackreardon/Documents/determining_car_pricing_via_machine_learning/data/modelling/rf_tune.rda")
 ```
+We can visualize the results using the autoplot function.
+
+```{r}
+# loading UK_CAD_rf_tune
+load("/Users/zackreardon/Documents/determining_car_pricing_via_machine_learning/data/modelling/rf_tune.rda")
+
+# plotting outcome
+autoplot(UK_CAD_rf_tune)
+```
+
+### K-nearest Neighbors
+
+The specification for a k-nearest neighbors model utilizes the nearest_neighbor function from the parsnip package. "K" in k-nearest neighbors refers to the number of neighbors near a data point that will be considered when classifying the group that the data point will belong to. In this case we will tune the `neighbors` parameter to optimize the value “k”. The default values for the other hyperparameters should be sufficient without the need for tuning. I also set up a workflow for the k-nearest neighbors model.
+
+```{r}
+# set specification for k-nearest neighbors
+knn_spec <- 
+  nearest_neighbor(neighbors = tune()) %>%
+  set_mode("regression") %>%
+  set_engine("kknn")
+
+# loading recipe
+load("/Users/zackreardon/Documents/determining_car_pricing_via_machine_learning/data/modelling/recipe.rda")
+
+# setting up workflow for k-nearest neighbors
+knn_workflow <- workflow() %>% 
+  # add recipe created earlier
+  add_recipe(UK_CAD_recipe) %>% 
+  add_model(knn_spec)
+```
+In order to tune “k” (neighbors), I created a regular tuning grid. Since the computing power requirement is extremely high for this process given the amount of data, I set the range between the default value of 5 and 10. `levels` is set at 2 to minimize the computing time.
+
+```{r}
+# creating tuning grid for neighbors
+neighbors_grid <- grid_regular(neighbors(range=c(5,10)), levels = 2)
+```
+We can now tune neighbors on our folded training data using the k-nearest neighbors workflow.
+
+```{r, eval=FALSE}
+# configuring for parallel processing
+before_loaded<- names(sessionInfo()$otherPkgs)
+
+# utilizing all available cores
+library(doParallel)
+cl <- makeCluster(4)
+registerDoParallel(cl)
+
+# fitting resamples with tuning grid
+UK_CAD_knn_tune <- tune_grid(
+  knn_workflow,
+  resamples = UK_CAD_folds, 
+  grid = neighbors_grid)
+
+# resetting packages after parallel processing
+after_loaded<- names(sessionInfo()$otherPkgs)
+after_loaded[!(after_loaded %in% before_loaded)]
+
+stopCluster(cl)
+registerDoSEQ()
+
+save(UK_CAD_knn_tune, file = "/Users/zackreardon/Documents/determining_car_pricing_via_machine_learning/data/modelling/knn_tune.rda")
+```
+This can be assessed with the autoplot function.
+
+```{r}
+# loading UK_CAD_knn_tune
+load("/Users/zackreardon/Documents/determining_car_pricing_via_machine_learning/data/modelling/knn_tune.rda")
+
+# plotting outcome
+autoplot(UK_CAD_knn_tune)
+```
+
+### Support Vector Machine
+
+The final model to set the specification of and make a workflow for is SVM. I decided to utilize the `svm_poly` function. This allows for a linear class boundary when assessing our dataset, and `degree` is set equal to 1 accordingly. I will tune the `cost` parameter, representing the cost for the predicted position of a data point relative to the margin. The other hyperparameters will remain as default, and an associated workflow will be constructed.
+
+```{r}
+# set specification for SVM
+svm_spec <- 
+  svm_poly(degree = 1, cost=tune()) %>%
+  set_mode("regression") %>%
+  set_engine("kernlab")
+
+# loading recipe
+load("/Users/zackreardon/Documents/determining_car_pricing_via_machine_learning/data/modelling/recipe.rda")
+
+# create workflow for lasso regression
+svm_workflow <- workflow() %>% 
+  # add recipe created earlier
+  add_recipe(UK_CAD_recipe) %>% 
+  add_model(svm_spec)
+```
+Since the parameter `cost` is restricted to positive values, I have set up a regular tuning grid with a range between 0.1 and 1 which should suffice. `levels` has been set at 2.
+
+```{r}
+# creating tuning grid for cost
+cost_grid <- grid_regular(cost(range=c(0.1,1)), levels = 2)
+```
+The value for `cost` can now be adequately tuned with the SVM workflow and the folded training data.
+
+```{r,eval=FALSE}
+# configuring for parallel processing
+before_loaded<- names(sessionInfo()$otherPkgs)
+
+# utilizing all available cores
+library(doParallel)
+cl <- makeCluster(4)
+registerDoParallel(cl)
+
+# fitting resamples with tuning grid
+UK_CAD_svm_tune <- tune_grid(
+  svm_workflow,
+  resamples = UK_CAD_folds, 
+  grid = cost_grid)
+
+# resetting packages after parallel processing
+after_loaded<- names(sessionInfo()$otherPkgs)
+after_loaded[!(after_loaded %in% before_loaded)]
+
+stopCluster(cl)
+registerDoSEQ()
+
+save(UK_CAD_svm_tune, file = "/Users/zackreardon/Documents/determining_car_pricing_via_machine_learning/data/modelling/svm_tune.rda")
+```
+Unfortunately, even with parallel processing using my 4 available cores, tuning the SVM model was on track to take several days and could not be achieved by the course deadline. I intend to explore the option of virtual cores including running RStudio on an AWS EC2 instance with a higher core count machine. With a more powerful computer supplemented by virtual cores, the SVM hyperparameter tuning requirements should be reduced to a more reasonable time.
 
 ## Finalized Model
+
+### Choosing Best Model
+
+In order to choose the best model to fit on our testing data, we will assess the tuning performance of the lasso regression, random forest, and k-nearest neighbors models. The support vector machine will not be considered for the time being, subject to computing power limitations. The metric that we will be assessing by is rmse, with the best performing parameters from each tuned grid compared to each other. The model with the best rmse of the three will be the best fit for our data.
+
+```{r}
+# loading tune rda files
+load("/Users/zackreardon/Documents/determining_car_pricing_via_machine_learning/data/modelling/lasso_tune.rda")
+load("/Users/zackreardon/Documents/determining_car_pricing_via_machine_learning/data/modelling/rf_tune.rda")
+load("/Users/zackreardon/Documents/determining_car_pricing_via_machine_learning/data/modelling/knn_tune.rda")
+
+# visualizing best performing parameter values
+show_best(UK_CAD_lasso_tune, metric = "rmse")
+show_best(UK_CAD_rf_tune, metric = "rmse")
+show_best(UK_CAD_knn_tune, metric = "rmse")
+```
+It appears that the lowest rmse of 7385 is achieved by k-nearest neighbors with a k value of 5. 
+### Fitting and Evaluating Model
+
+We will fit the best-performing k-nearest neighbors model to the training and testing sets. The first step is to finalize the k-nearest neighbors workflow with the best parameters. We will then fit this finalized workflow to the whole training dataset.
+
+```{r}
+# finalizing knn workflow
+final_workflow <- knn_workflow %>%
+  finalize_workflow(select_best(UK_CAD_knn_tune, metric = "rmse"))
+
+# fitting training data
+final_model <- fit(final_workflow, UK_CAD_train)
+
+save(UK_CAD_train_results, file = "/Users/zackreardon/Documents/determining_car_pricing_via_machine_learning/data/modelling/final_model.rda")
+```
+Finally, let's predict the testing data using the final model we have fit to the training data.
+
+```{r}
+# predicting on the testing set
+augment(final_model, new_data = UK_CAD_test) %>%
+  rmse(truth = Price, estimate = .pred)
+```
 
 ## Conclusion
