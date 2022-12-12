@@ -736,11 +736,45 @@ show_best(UK_CAD_lasso_tune, metric = &quot;rmse&quot;)</code></pre>
 ##       &lt;int&gt; &lt;chr&gt;   &lt;chr&gt;      &lt;dbl&gt; &lt;int&gt;   &lt;dbl&gt; &lt;chr&gt;               
 ## 1         5 rmse    standard   7385.    50    524. Preprocessor1_Model1
 ## 2        10 rmse    standard   7461.    50    521. Preprocessor1_Model2</code></pre>
-<p>It appears that the lowest rmse of is achieved by k-nearest neighbors with a k value of 5. ### Fitting and Evaluating Model</p>
+<p>It appears that the lowest rmse of 7385 is achieved by k-nearest neighbors with a k value of 5. ### Fitting and Evaluating Model</p>
+<p>We will fit the best-performing k-nearest neighbors model to the training and testing sets. The first step is to finalize the k-nearest neighbors workflow with the best parameters. We will then fit this finalized workflow to the whole training dataset. The final model was saved locally but was too large to push to GitHub.</p>
+<pre class="r"><code># finalizing knn workflow
+final_workflow &lt;- knn_workflow %&gt;%
+  finalize_workflow(select_best(UK_CAD_knn_tune, metric = &quot;rmse&quot;))
+
+# fitting training data
+final_model &lt;- fit(final_workflow, UK_CAD_train)
+
+save(final_model, file = &quot;/Users/zackreardon/Documents/determining_car_pricing_via_machine_learning/data/modelling/final_model.rda&quot;)</code></pre>
+<p>Finally, let’s predict the testing data using the final model we have fit to the training data.</p>
+<pre class="r"><code>load(&quot;/Users/zackreardon/Documents/determining_car_pricing_via_machine_learning/data/modelling/final_model.rda&quot;)
+
+# filter test set to allow for mileage to be logged
+UK_CAD_test &lt;- UK_CAD_test %&gt;% 
+  filter(Runned_Miles != 0)
+
+# predicting on the testing set
+augment(final_model, new_data = UK_CAD_test) %&gt;%
+  rmse(truth = Price, estimate = .pred)</code></pre>
+<pre><code>## # A tibble: 1 × 3
+##   .metric .estimator .estimate
+##   &lt;chr&gt;   &lt;chr&gt;          &lt;dbl&gt;
+## 1 rmse    standard      46967.</code></pre>
+<pre class="r"><code># out of interest let&#39;s evaluate the associated r-squared value
+augment(final_model, new_data = UK_CAD_test) %&gt;%
+  rsq(truth = Price, estimate = .pred)</code></pre>
+<pre><code>## # A tibble: 1 × 3
+##   .metric .estimator .estimate
+##   &lt;chr&gt;   &lt;chr&gt;          &lt;dbl&gt;
+## 1 rsq     standard       0.167</code></pre>
+<p>The rmse of our testing data is 46967 which is significantly worse than the rmse from training which was 7385. Out of curiosity I also calculated the r-squared of the final model on the testing data which is 0.167, meaning that the model only accounts for 16.7% of the variability in the data.</p>
 </div>
 </div>
 <div id="conclusion" class="section level2">
 <h2>Conclusion</h2>
+<p>Evidently, this model would provide little real world benefit in terms of vehicle pricing owing to a high rmse and a correspondingly low r-squared value. Given greater computing power and increased time availability, I could have optimized the tuning parameters, as my main objective was to complete the tuning process with the resources I had available. Additionally, I feel that further tweaks to my recipe could help provide more consistent results. However, even with the ideal parameters in place for the perfect model, I’m uncertain that vehicle pricing can be predicted with a large degree of accuracy. My EDA exhibited far more randomization in terms of variables than I had anticipated. For instance, my intuition that black, gray, or white cars are more popular since they command a higher resale value, was not entirely supported by the average price based on color. Since exotic and luxury vehicles exist as outliers compared to daily drivers, modelling these vehicle types separately could have theoretically been more effective.</p>
+<p>In terms of model outcomes, k-nearest neighbors proved to be the most accurate, followed by random forest and lasso regression. Unfortunately the support vector machine was unable to be tuned and rendered in time. With the benefit of hindsight, I would have replaced the SVM with a boosted tree model. I feel that with parameter optimization, the performance of the random forest can be increased to exceed the potential of the k-nearest neighbors. Ultimately, all models performed relatively poorly.</p>
+<p>I think that this model can be adjusted to be more effective by more finely tuning the parameters for the random forest. I feel that adding more levels for <code>mtry</code> between 2 and 8 will be beneficial, while the <code>min_n</code> value of 5 seems sufficient. I am confused as to how the k-nearest neighbors model performed better than the random forest, since it should have more difficulty when scaling up to a dataset of our size. It will be interesting to see how the support vector machine does end up performing. With the implementation of either greater computing power, virtual cores, or a combination of the two, a tuned SVM model should be accessible. Computing time for the SVM could have been excessive due to both the large amount of data and the regression rather than classification approach.</p>
 </div>
 
 
