@@ -736,7 +736,10 @@ show_best(UK_CAD_lasso_tune, metric = &quot;rmse&quot;)</code></pre>
 ##       &lt;int&gt; &lt;chr&gt;   &lt;chr&gt;      &lt;dbl&gt; &lt;int&gt;   &lt;dbl&gt; &lt;chr&gt;               
 ## 1         5 rmse    standard   7385.    50    524. Preprocessor1_Model1
 ## 2        10 rmse    standard   7461.    50    521. Preprocessor1_Model2</code></pre>
-<p>It appears that the lowest rmse of 7385 is achieved by k-nearest neighbors with a k value of 5. ### Fitting and Evaluating Model</p>
+<p>It appears that the lowest rmse of 7385 is achieved by k-nearest neighbors with a k value of 5.</p>
+</div>
+<div id="fitting-and-evaluating-model" class="section level3">
+<h3>Fitting and Evaluating Model</h3>
 <p>We will fit the best-performing k-nearest neighbors model to the training and testing sets. The first step is to finalize the k-nearest neighbors workflow with the best parameters. We will then fit this finalized workflow to the whole training dataset. The final model was saved locally but was too large to push to GitHub.</p>
 <pre class="r"><code># finalizing knn workflow
 final_workflow &lt;- knn_workflow %&gt;%

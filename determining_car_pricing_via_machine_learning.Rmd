@@ -542,7 +542,8 @@ show_best(UK_CAD_lasso_tune, metric = "rmse")
 show_best(UK_CAD_rf_tune, metric = "rmse")
 show_best(UK_CAD_knn_tune, metric = "rmse")
 ```
-It appears that the lowest rmse of 7385 is achieved by k-nearest neighbors with a k value of 5. 
+It appears that the lowest rmse of 7385 is achieved by k-nearest neighbors with a k value of 5.
+
 ### Fitting and Evaluating Model
 
 We will fit the best-performing k-nearest neighbors model to the training and testing sets. The first step is to finalize the k-nearest neighbors workflow with the best parameters. We will then fit this finalized workflow to the whole training dataset. The final model was saved locally but was too large to push to GitHub.
